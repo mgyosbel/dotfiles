@@ -1,0 +1,46 @@
+#!/bin/bash
+# tmux-dev-dir: Ensure exactly 3 dev windows in the current tmux session
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# Get current session name
+tmux_session=$(tmux display-message -p '#S')
+
+# Use current directory as the dev directory
+dev_dir="$(pwd)"
+
+# Kill all windows except the first (to avoid closing the session)
+window_count=$(tmux list-windows | wc -l)
+if [ "$window_count" -gt 1 ]; then
+  for win in $(tmux list-windows -F '#I' | tail -n +2); do
+    tmux kill-window -t "$win"
+  done
+fi
+
+# Rename the first window to 'code' and set up nvim .
+tmux rename-window -t 1 code
+tmux send-keys -t "$tmux_session":code "cd '$dev_dir' && nvim ." C-m
+
+# Create 'run' window as window 2
+if ! tmux list-windows -F '#W' | grep -qx run; then
+  tmux new-window -t 2 -n run -c "$dev_dir"
+else
+  tmux move-window -s $(tmux list-windows -F '#I:#W' | grep ':run$' | cut -d: -f1) -t 2
+fi
+
+# Create 'ai' window as window 3
+if ! tmux list-windows -F '#W' | grep -qx ai; then
+  tmux new-window -t 3 -n ai -c "$dev_dir"
+else
+  tmux move-window -s $(tmux list-windows -F '#I:#W' | grep ':ai$' | cut -d: -f1) -t 3
+fi
+
+tmux send-keys -t "$tmux_session":ai "cd '$dev_dir' && opencode" C-m
+
+# Ensure only 3 windows
+while [ $(tmux list-windows | wc -l) -gt 3 ]; do
+  tmux kill-window -t $(tmux list-windows -F '#I' | tail -n 1)
+done
+
+# Select the 'code' window
+tmux select-window -t "$tmux_session":code
