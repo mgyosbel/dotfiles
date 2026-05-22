@@ -55,7 +55,7 @@ apt_update_once() {
   local sentinel="/tmp/.dotfiles_apt_updated"
   if [[ ! -f "$sentinel" ]]; then
     log_info "Running apt-get update..."
-    sudo apt-get update -qq
+    apt-get update -qq
     touch "$sentinel"
   fi
 }
@@ -68,7 +68,7 @@ brew_install() {
 apt_install() {
   local pkg="$1"
   apt_update_once
-  sudo apt-get install -y "$pkg"
+  apt-get install -y "$pkg"
 }
 
 # Idempotent git clone: only clones if destination does not exist.

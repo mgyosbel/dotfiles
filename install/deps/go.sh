@@ -13,8 +13,8 @@ dep_install() {
       local GO_TARBALL="go${GO_VERSION}.linux-amd64.tar.gz"
       local TMP_FILE="/tmp/${GO_TARBALL}"
       curl -fsSL "https://go.dev/dl/${GO_TARBALL}" -o "$TMP_FILE"
-      sudo rm -rf /usr/local/go
-      sudo tar -C /usr/local -xzf "$TMP_FILE"
+      rm -rf /usr/local/go
+      tar -C /usr/local -xzf "$TMP_FILE"
       rm "$TMP_FILE"
       log_info "Go installed to /usr/local/go — ensure /usr/local/go/bin is in your PATH."
       ;;
