@@ -41,7 +41,7 @@ PACKAGES=(zsh nvim tmux ghostty)
 has_conflict() {
   local package="$1"
   local package_dir="$DOTFILES_DIR/$package"
-  local conflict=0
+  local found=0
 
   # Walk top-level entries inside the package dir
   for entry in "$package_dir"/.*  "$package_dir"/*; do
@@ -55,11 +55,12 @@ has_conflict() {
     if [[ -e "$target" && ! -L "$target" ]]; then
       log_conflict "$package: $target is a real file/directory — back it up and remove it, then re-run."
       CONFLICTS+=("$target")
-      conflict=1
+      found=1
     fi
   done
 
-  return $conflict
+  # Return 0 (truthy in bash) when a conflict was found
+  [[ $found -eq 1 ]]
 }
 
 is_already_stowed() {

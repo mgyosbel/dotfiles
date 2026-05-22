@@ -2,7 +2,7 @@
 # install/deps/go.sh
 
 dep_name()         { echo "go"; }
-dep_is_installed() { is_installed go; }
+dep_is_installed() { is_installed go || [[ -x "/usr/local/go/bin/go" ]]; }
 dep_install() {
   case "$PLATFORM" in
     macos)

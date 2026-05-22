@@ -7,6 +7,7 @@
 # Canonical install order
 # ─────────────────────────────────────────────
 ALL_DEPS=(
+  curl
   git
   zsh
   stow
@@ -56,6 +57,7 @@ run_dep() {
   #   1 = failed
   local result
   result=$(
+    set -e
     # shellcheck source=/dev/null
     source "$DOTFILES_DIR/install/lib/common.sh"
     # shellcheck source=/dev/null
