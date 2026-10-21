@@ -1,0 +1,11 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+*.bkp
+*.swp
+*.swo
+*~
+.zshrc.local
+.zprofile.local
+/packages/nvim/.config/nvim/local.lua

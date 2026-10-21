@@ -1,101 +1,59 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-# ─────────────────────────────────────────────
-# Resolve dotfiles root (works from any CWD)
-# ─────────────────────────────────────────────
 DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export DOTFILES_DIR
-
-# ─────────────────────────────────────────────
-# Bootstrap shared lib
-# ─────────────────────────────────────────────
 # shellcheck source=install/lib/common.sh
 source "$DOTFILES_DIR/install/lib/common.sh"
 # shellcheck source=install/lib/registry.sh
 source "$DOTFILES_DIR/install/lib/registry.sh"
 
-# ─────────────────────────────────────────────
-# Usage
-# ─────────────────────────────────────────────
 usage() {
-  cat <<EOF
-Usage: ./install.sh [OPTIONS] [dep...]
+  cat <<'EOF'
+Usage: ./install.sh [--dry-run] [dependency...]
 
-Install dotfile dependencies on macOS (brew) or Linux (apt).
+Install dependencies on macOS (Homebrew) or Debian/Ubuntu (apt).
+Declared prerequisites are resolved before dependents. No selection means all.
 
-OPTIONS
-  --list       List all available dependencies and exit
-  --dry-run    Show what would be installed without making changes
-  --help       Show this help and exit
+  --dry-run  Report planned installations without running installers
+  --list     List available dependencies
+  --help     Show this help
 
-EXAMPLES
-  ./install.sh                  Install everything
-  ./install.sh neovim tmux      Install only neovim and tmux
-  ./install.sh --dry-run        Preview what would be installed
-  ./install.sh --list           Print all available dep names
+Examples:
+  ./install.sh --dry-run
+  ./install.sh neovim tmux
 EOF
 }
 
-# ─────────────────────────────────────────────
-# Argument parsing
-# ─────────────────────────────────────────────
 SELECTED_DEPS=()
-
 for arg in "$@"; do
   case "$arg" in
-    --help)    usage; exit 0 ;;
-    --list)    list_deps; exit 0 ;;
-    --dry-run) export DRY_RUN=1 ;;
-    --*)
-      echo -e "${RED}Unknown option: $arg${NC}"
-      usage
-      exit 1
-      ;;
-    *)
-      SELECTED_DEPS+=("$arg")
-      ;;
+    --help) usage; exit 0 ;;
+    --list) list_deps; exit 0 ;;
+    --dry-run) DRY_RUN=1 ;;
+    -*) log_fail "Unknown option: $arg"; exit 1 ;;
+    *) SELECTED_DEPS+=("$arg") ;;
   esac
 done
+if [[ ${#SELECTED_DEPS[@]} -eq 0 ]]; then SELECTED_DEPS=("${ALL_DEPS[@]}"); fi
+for name in "${SELECTED_DEPS[@]}"; do validate_dep "$name" || exit 1; done
+detect_platform
+for name in "${SELECTED_DEPS[@]}"; do resolve_dep "$name" || exit 1; done
 
-# ─────────────────────────────────────────────
-# Validate positional dep names
-# ─────────────────────────────────────────────
-if [[ ${#SELECTED_DEPS[@]} -gt 0 ]]; then
-  for name in "${SELECTED_DEPS[@]}"; do
-    valid=0
-    for known in "${ALL_DEPS[@]}"; do
-      [[ "$name" == "$known" ]] && valid=1 && break
-    done
-    if [[ $valid -eq 0 ]]; then
-      echo -e "${RED}Unknown dep: '$name'${NC}. Run ./install.sh --list to see available deps."
-      exit 1
-    fi
-  done
-else
-  SELECTED_DEPS=("${ALL_DEPS[@]}")
+# Keep user-level tools in the invoking user's home. Elevate individual system
+# operations via as_root instead of executing the entire bootstrap with sudo.
+if [[ "$DRY_RUN" != 1 && "$EUID" -eq 0 ]]; then
+  log_fail 'Run install.sh as your normal user; system operations use sudo as needed.'
+  exit 1
 fi
-
-# ─────────────────────────────────────────────
-# macOS: ensure Homebrew is present
-# ─────────────────────────────────────────────
-if [[ "$PLATFORM" == "macos" ]] && ! is_installed brew; then
-  log_install "Homebrew (required on macOS)"
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+ensure_homebrew
+if [[ "$DRY_RUN" != 1 ]]; then
+  INSTALL_STATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-install.XXXXXXXX")
+  export INSTALL_STATE_DIR
+  trap 'rm -rf -- "$INSTALL_STATE_DIR"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 fi
-
-# ─────────────────────────────────────────────
-# Run selected deps
-# ─────────────────────────────────────────────
-[[ "$DRY_RUN" == "1" ]] && log_info "Dry-run mode — no changes will be made."
-log_info "Platform: $PLATFORM"
-echo ""
-
-for dep in "${SELECTED_DEPS[@]}"; do
-  run_dep "$dep" || true  # failures tracked inside run_dep; don't abort the loop
-done
-
-# ─────────────────────────────────────────────
-# Summary
-# ─────────────────────────────────────────────
+log_info "Platform: $PLATFORM ($DISTRO), architecture: $ARCH"
+[[ "$DRY_RUN" != 1 ]] || log_info 'Preview only; no installers or state-directory writes.'
+for dep in "${ORDERED[@]}"; do run_dep "$dep" || true; done
 print_summary

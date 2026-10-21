@@ -1,5 +1,0 @@
-font-family = "JetBrainsMono NFM" 
-theme = "Dracula+"
-command = "tmux"
-gtk-single-instance = false
-

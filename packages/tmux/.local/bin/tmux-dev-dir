@@ -1,0 +1,41 @@
+#!/bin/bash
+# Keep the first window, close the others, and create code/run/ai in this session.
+set -euo pipefail
+export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin"
+command -v tmux >/dev/null 2>&1 || { printf 'tmux is required\n' >&2; exit 1; }
+[[ -n "${TMUX_PANE:-}" ]] || { printf 'Run tmux-dev-dir from a tmux pane\n' >&2; exit 1; }
+
+session=$(tmux display-message -p -t "$TMUX_PANE" '#{session_id}')
+[[ "$session" == \$* ]] || { printf 'Could not identify the current session\n' >&2; exit 1; }
+# Use the project directory recorded when this session was created, even when
+# the invoking pane has since changed directories.
+dev_dir=$(tmux display-message -p -t "$TMUX_PANE" '#{session_path}')
+[[ -n "$dev_dir" && -d "$dev_dir" ]] || {
+  printf 'Session directory is missing or invalid: %s\n' "$dev_dir" >&2
+  exit 1
+}
+windows=$(tmux list-windows -t "$session" -F '#{window_id}')
+first=""
+while IFS= read -r window; do
+  [[ -n "$window" ]] || continue
+  if [[ -z "$first" ]]; then
+    first=$window
+  else
+    tmux kill-window -t "$window"
+  fi
+done <<< "$windows"
+[[ -n "$first" ]] || { printf 'No windows in current session\n' >&2; exit 1; }
+index=$(tmux display-message -p -t "$first" '#{window_index}')
+if [[ "$index" != 1 ]]; then
+  tmux move-window -s "$first" -t "$session:1"
+fi
+tmux rename-window -t "$first" code
+code_pane=$(tmux display-message -p -t "$first" '#{pane_id}')
+quoted=${dev_dir//\'/\'\\\'\'}
+tmux send-keys -t "$code_pane" -l "cd '$quoted' && nvim ."
+tmux send-keys -t "$code_pane" C-m
+tmux new-window -d -t "$session:2" -n run -c "$dev_dir"
+ai_pane=$(tmux new-window -d -P -F '#{pane_id}' -t "$session:3" -n ai -c "$dev_dir")
+tmux send-keys -t "$ai_pane" -l "cd '$quoted' && opencode"
+tmux send-keys -t "$ai_pane" C-m
+tmux select-window -t "$first"

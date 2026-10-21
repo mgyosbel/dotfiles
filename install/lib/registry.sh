@@ -1,176 +1,132 @@
 #!/usr/bin/env bash
-# install/lib/registry.sh
-# Canonical dep list, run_dep dispatcher, and summary printer.
-# Sourced by install.sh — not executed directly.
-
-# ─────────────────────────────────────────────
-# Canonical install order
-# ─────────────────────────────────────────────
-ALL_DEPS=(
-  curl
-  git
-  zsh
-  stow
-  neovim
-  tmux
-  fzf
-  bat
-  go
-  rust
-  kubectl
-  kubecolor
-  nvm
-  oh-my-zsh
-  zsh-syntax-highlighting
-  zsh-completions
-  ghostty
-)
-
-# ─────────────────────────────────────────────
-# Result tracking (populated by run_dep)
-# ─────────────────────────────────────────────
+# Bash 3.2-compatible dependency graph and dispatcher.
+ALL_DEPS=(curl git zsh stow neovim tmux tpm fzf bat starship go rust kubectl kubecolor nvm
+          oh-my-zsh zsh-syntax-highlighting zsh-completions zsh-autosuggestions ghostty)
+ORDERED=()
+VISITING=()
+RESOLVED=()
 _INSTALLED=()
+_PLANNED=()
 _SKIPPED=()
 _FAILED=()
+_UNSUPPORTED=()
 
-# ─────────────────────────────────────────────
-# run_dep <name>
-#
-# Sources deps/<name>.sh in a subshell for isolation.
-# Checks dep_platforms, dep_requires, dep_is_installed,
-# then calls dep_install (or dry-run logs it).
-# ─────────────────────────────────────────────
+contains() {
+  local wanted=$1 item
+  shift
+  for item in "$@"; do [[ "$item" != "$wanted" ]] || return 0; done
+  return 1
+}
+
+validate_dep() {
+  contains "$1" "${ALL_DEPS[@]}" || { log_fail "Unknown dependency: $1"; return 1; }
+  [[ -r "$DOTFILES_DIR/install/deps/$1.sh" ]] || { log_fail "Missing module: $1"; return 1; }
+}
+
+# Fresh Bash processes isolate module functions and preserve errexit inside
+# dep_install, even though the parent examines the process's return status.
+module_call() {
+  local name=$1 operation=$2
+  # The child Bash expands this script.
+  # shellcheck disable=SC2016
+  "$BASH" -euo pipefail -c '
+    source "$DOTFILES_DIR/install/lib/common.sh"
+    source "$DOTFILES_DIR/install/deps/$1.sh"
+    case "$2" in
+      requires) if declare -f dep_requires >/dev/null; then dep_requires; fi ;;
+      platforms) if declare -f dep_platforms >/dev/null; then dep_platforms; fi ;;
+      check) dep_is_installed ;;
+      install)
+        dep_install
+        if ! dep_is_installed; then
+          log_fail "$1: post-install check failed"
+          exit 1
+        fi
+        ;;
+    esac
+  ' module "$name" "$operation"
+}
+
+supported_dep() {
+  local values p
+  values=$(module_call "$1" platforms) || return 1
+  [[ -n "$values" ]] || return 0
+  while IFS= read -r p; do [[ "$p" != "$PLATFORM" ]] || return 0; done <<< "$values"
+  return 2
+}
+
+resolve_dep() {
+  local name=$1 requirements req index support_status
+  validate_dep "$name" || return 1
+  contains "$name" "${RESOLVED[@]+"${RESOLVED[@]}"}" && return 0
+  if contains "$name" "${VISITING[@]+"${VISITING[@]}"}"; then
+    log_fail "Dependency cycle at $name"
+    return 1
+  fi
+  VISITING+=("$name")
+  # Unsupported top-level modules are reported as skips, not installed.
+  if supported_dep "$name"; then
+    requirements=$(module_call "$name" requires) || return 1
+    while IFS= read -r req; do
+      [[ -n "$req" ]] || continue
+      validate_dep "$req" || return 1
+      if ! supported_dep "$req"; then
+        log_fail "$name requires $req, which does not support $PLATFORM"
+        return 1
+      fi
+      resolve_dep "$req" || return 1
+    done <<< "$requirements"
+  else
+    support_status=$?
+    [[ "$support_status" -eq 2 ]] || { log_fail "Failed reading platform metadata: $name"; return 1; }
+    _UNSUPPORTED+=("$name")
+  fi
+  index=$((${#VISITING[@]} - 1))
+  unset "VISITING[$index]"
+  RESOLVED+=("$name")
+  ORDERED+=("$name")
+}
+
 run_dep() {
-  local name="$1"
-  local dep_file="$DOTFILES_DIR/install/deps/${name}.sh"
-
-  if [[ ! -f "$dep_file" ]]; then
-    log_fail "$name — dep file not found: $dep_file"
+  local name=$1 requirements req
+  if contains "$name" "${_UNSUPPORTED[@]+"${_UNSUPPORTED[@]}"}"; then
+    log_skip "$name (unsupported on $PLATFORM)"
+    _SKIPPED+=("$name")
+    return 0
+  fi
+  if module_call "$name" check; then
+    log_skip "$name (already installed)"
+    _SKIPPED+=("$name")
+    return 0
+  fi
+  requirements=$(module_call "$name" requires) || { _FAILED+=("$name"); return 1; }
+  while IFS= read -r req; do
+    [[ -n "$req" ]] || continue
+    if contains "$req" "${_FAILED[@]+"${_FAILED[@]}"}"; then
+      log_fail "$name blocked by failed prerequisite $req"
+      _FAILED+=("$name")
+      return 1
+    fi
+  done <<< "$requirements"
+  if [[ "$DRY_RUN" == 1 ]]; then
+    log_dry "$name would be installed"
+    _PLANNED+=("$name")
+  elif module_call "$name" install; then
+    log_install "$name completed"
+    _INSTALLED+=("$name")
+  else
+    log_fail "$name installation failed"
     _FAILED+=("$name")
     return 1
   fi
-
-  # Run everything in a subshell for isolation.
-  # The subshell exits with:
-  #   0 = installed or skipped (success)
-  #   2 = skipped (platform mismatch or already installed)
-  #   1 = failed
-  local result
-  result=$(
-    set -e
-    # shellcheck source=/dev/null
-    source "$DOTFILES_DIR/install/lib/common.sh"
-    # shellcheck source=/dev/null
-    source "$dep_file"
-
-    local dname
-    dname="$(dep_name)"
-
-    # ── Platform check ──────────────────────────
-    if declare -f dep_platforms &>/dev/null; then
-      local platforms
-      mapfile -t platforms < <(dep_platforms)
-      local supported=0
-      for p in "${platforms[@]}"; do
-        [[ "$p" == "$PLATFORM" ]] && supported=1 && break
-      done
-      if [[ $supported -eq 0 ]]; then
-        log_skip "$dname (not supported on $PLATFORM)"
-        exit 2
-      fi
-    fi
-
-    # ── Requires check ──────────────────────────
-    if declare -f dep_requires &>/dev/null; then
-      local reqs
-      mapfile -t reqs < <(dep_requires)
-      for req in "${reqs[@]}"; do
-        local req_file="$DOTFILES_DIR/install/deps/${req}.sh"
-        if [[ ! -f "$req_file" ]]; then
-          log_fail "$dname — required dep '$req' has no dep file"
-          exit 1
-        fi
-        # Source req in a nested subshell just to call dep_is_installed
-        local req_ok
-        req_ok=$(
-          source "$DOTFILES_DIR/install/lib/common.sh"
-          source "$req_file"
-          dep_is_installed && echo "yes" || echo "no"
-        )
-        if [[ "$req_ok" != "yes" ]]; then
-          log_fail "$dname — required dep '$req' is not installed. Run: ./install.sh $req"
-          exit 1
-        fi
-      done
-    fi
-
-    # ── Already installed? ───────────────────────
-    if dep_is_installed; then
-      log_skip "$dname"
-      exit 2
-    fi
-
-    # ── Dry-run ─────────────────────────────────
-    if [[ "$DRY_RUN" == "1" ]]; then
-      log_dry "$dname — would install"
-      exit 0
-    fi
-
-    # ── Install ─────────────────────────────────
-    log_install "$dname"
-    if dep_install; then
-      exit 0
-    else
-      log_fail "$dname — installation failed"
-      exit 1
-    fi
-  )
-  local exit_code=$?
-
-  # Print subshell output
-  echo "$result"
-
-  case $exit_code in
-    0) _INSTALLED+=("$name") ;;
-    2) _SKIPPED+=("$name") ;;
-    *) _FAILED+=("$name") ;;
-  esac
-
-  return $exit_code
 }
 
-# ─────────────────────────────────────────────
-# print_summary
-# ─────────────────────────────────────────────
 print_summary() {
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo " Install Summary"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo -e "${GREEN}Installed (${#_INSTALLED[@]}):${NC} ${_INSTALLED[*]:-none}"
-  echo -e "${CYAN}Skipped   (${#_SKIPPED[@]}):${NC} ${_SKIPPED[*]:-none}"
-  echo -e "${RED}Failed    (${#_FAILED[@]}):${NC} ${_FAILED[*]:-none}"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-  if [[ ${#_FAILED[@]} -gt 0 ]]; then
-    echo -e "${RED}Some dependencies failed. Review the output above.${NC}"
-    return 1
-  fi
-
-  echo -e "${GREEN}All done.${NC}"
+  printf '\nInstalled (%s): %s\n' "${#_INSTALLED[@]}" "${_INSTALLED[*]:-none}"
+  printf 'Planned   (%s): %s\n' "${#_PLANNED[@]}" "${_PLANNED[*]:-none}"
+  printf 'Skipped   (%s): %s\n' "${#_SKIPPED[@]}" "${_SKIPPED[*]:-none}"
+  printf 'Failed    (%s): %s\n' "${#_FAILED[@]}" "${_FAILED[*]:-none}"
+  [[ ${#_FAILED[@]} -eq 0 ]]
 }
 
-# ─────────────────────────────────────────────
-# list_deps — prints all available dep names
-# ─────────────────────────────────────────────
-list_deps() {
-  echo -e "${BOLD}Available dependencies:${NC}"
-  for name in "${ALL_DEPS[@]}"; do
-    local dep_file="$DOTFILES_DIR/install/deps/${name}.sh"
-    if [[ -f "$dep_file" ]]; then
-      echo "  $name"
-    else
-      echo -e "  ${RED}$name${NC} (missing dep file)"
-    fi
-  done
-}
+list_deps() { printf '%s\n' "${ALL_DEPS[@]}"; }

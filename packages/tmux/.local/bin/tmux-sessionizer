@@ -1,0 +1,48 @@
+#!/usr/bin/env zsh
+
+# Respect the calling shell's tools; add common GUI-session fallback paths.
+typeset -U path
+path+=(/opt/homebrew/bin /usr/local/bin /home/linuxbrew/.linuxbrew/bin)
+(( $+commands[tmux] )) || { print -u2 'tmux is required'; exit 1; }
+(( $# <= 1 )) || { print -u2 'Usage: tmux-sessionizer [directory]'; exit 1; }
+
+if (( $# == 1 )); then
+  selected=$1
+else
+  (( $+commands[fzf] )) || { print -u2 'fzf is required for directory selection'; exit 1; }
+  roots=("$HOME")
+  [[ -d "$HOME/dev" ]] && roots+=("$HOME/dev")
+  # Keep the live depth of 3 for each root; NUL records preserve unusual names.
+  IFS= read -r -d '' selected < <(
+    find "${roots[@]}" -mindepth 1 -maxdepth 3 -type d -print0 2>/dev/null |
+      fzf --read0 --print0
+  ) || exit 0
+fi
+[[ -n "$selected" ]] || exit 0
+[[ -d "$selected" ]] || { print -u2 -- "Directory not found: $selected"; exit 1; }
+selected=${selected:A}
+selected_name=${selected:t}
+selected_name=${selected_name//./_}
+selected_name=${selected_name//:/_}
+[[ -n "$selected_name" ]] || selected_name=root
+
+if ! tmux has-session -t "=$selected_name" 2>/dev/null; then
+  pane=$(tmux new-session -d -P -F '#{pane_id}' -s "$selected_name" -c "$selected") || exit 1
+  hydrate_file=""
+  if [[ -f "$selected/.tmux-sessionizer" ]]; then
+    hydrate_file="$selected/.tmux-sessionizer"
+  elif [[ -f "$HOME/.tmux-sessionizer" ]]; then
+    hydrate_file="$HOME/.tmux-sessionizer"
+  fi
+  if [[ -n "$hydrate_file" ]]; then
+    # Single-quote for the interactive shell, including embedded apostrophes.
+    quoted=${hydrate_file//\'/\'\\\'\'}
+    tmux send-keys -t "$pane" -l "source '$quoted'" || exit 1
+    tmux send-keys -t "$pane" C-m || exit 1
+  fi
+fi
+if [[ -n "${TMUX:-}" ]]; then
+  tmux switch-client -t "=$selected_name"
+else
+  tmux attach-session -t "=$selected_name"
+fi
