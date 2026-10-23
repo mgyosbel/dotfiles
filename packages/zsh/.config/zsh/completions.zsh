@@ -24,6 +24,10 @@ if (( $+commands[dotnet] )); then
   compdef _dotnet_zsh_complete dotnet
 fi
 
+if (( $+commands[cargo])); then
+  source <(CARGO_COMPLETE=zsh cargo +nightly)
+fi
+
 if ! _load_cached fzf fzf --zsh; then
   if [[ -r "$HOME/.fzf.zsh" ]]; then
     source "$HOME/.fzf.zsh"
