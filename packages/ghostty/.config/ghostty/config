@@ -1,6 +1,6 @@
 font-family = "JetbrainsMono Nerd Font"
 font-size = 16
-command = tmux
+command = /opt/homebrew/bin/tmux
 gtk-single-instance = false
 theme = Catppuccin Mocha
 background-opacity = 0.85
